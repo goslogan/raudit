@@ -1,0 +1,5 @@
+{ 
+    "audit_address": "10.40.10.52", 
+    "audit_port": 29001,
+    "audit_protocol": "TCP"
+}
