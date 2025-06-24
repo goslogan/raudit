@@ -10,11 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/goslogan/raudit/server"
 	"github.com/rs/zerolog"
 	"github.com/spf13/pflag"
 )
 
-var port int
+var port uint16
 var address string
 var useSyslog bool
 var facility string
@@ -40,9 +41,13 @@ func main() {
 		internalLogger.Fatal().Err(err).Msg("unable to initialise logger")
 	}
 
-	server, err := NewServer(address, port, internalLogger, logger)
+	server, err := server.NewServer(internalLogger, logger)
 	if err != nil {
 		internalLogger.Fatal().Err(err).Msg("unable to build server")
+	}
+	err = server.Listen(fmt.Sprintf("%s:%d", address, port))
+	if err != nil {
+		internalLogger.Fatal().Uint16("port", port).Str("address", address).Err(err).Msg("unable to listen")
 	}
 
 	server.Start()
@@ -117,7 +122,7 @@ func getSyslogFacility(facility string) (syslog.Priority, error) {
 }
 
 func init() {
-	pflag.IntVarP(&port, "port", "p", 29001, "port to listen on")
+	pflag.Uint16VarP(&port, "port", "p", 29001, "port to listen on")
 	pflag.StringVarP(&address, "address", "a", "127.0.0.1", "address to listen on")
 	pflag.BoolVarP(&useSyslog, "syslog", "s", false, "send logs to syslog")
 	pflag.StringVarP(&facility, "facility", "F", "LOCAL0", "syslog facility to use")
