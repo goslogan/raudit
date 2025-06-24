@@ -21,7 +21,7 @@ type NewConnection struct {
 	BdbName string `json:"bdb_name"`
 	BdbUID  string `json:"bdb_uid"`
 }
-type AuthAudit struct {
+type NewConnEvent struct {
 	TS      int64         `json:"ts"`
 	NewConn NewConnection `json:"new_conn"`
 }
@@ -45,10 +45,17 @@ func (client *Client) Send(input any) {
 
 }
 
-func (client *Client) SendAuth() {
+func (client *Client) SendNewConn(ts time.Time) NewConnEvent {
 
-	event := AuthAudit{
-		TS: time.Now().Unix(),
+	event := client.BuildNewConnEvent(ts)
+	client.Send(event)
+	return event
+}
+
+func (client *Client) BuildNewConnEvent(ts time.Time) NewConnEvent {
+
+	return NewConnEvent{
+		TS: ts.Unix(),
 		NewConn: NewConnection{
 			ID:      rand.Uint64(),
 			Srcip:   "127.0.0.1",
@@ -60,6 +67,4 @@ func (client *Client) SendAuth() {
 			BdbUID:  "1",
 		},
 	}
-
-	client.Send(event)
 }

@@ -22,21 +22,23 @@ type Server struct {
 	done           chan bool
 }
 
-type Filter func(*Server, map[string]interface{}) bool
+type Filter func(*Server, map[string]any) bool
 
-func NewServer(internalLogger, mainLogger zerolog.Logger) (*Server, error) {
+// NewServer returns a server object ready to be configured.
+func NewServer(internalLogger, mainLogger zerolog.Logger) *Server {
 
 	server := &Server{
 		logger:         mainLogger,
 		internalLogger: internalLogger,
 		done:           make(chan bool),
-		filters:        []Filter{nilFilter},
+		filters:        []Filter{},
 	}
 
-	return server, nil
+	return server
 
 }
 
+// Listen adds an address and port for the server to listen on.
 func (server *Server) Listen(addr string) error {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
@@ -53,6 +55,42 @@ func (server *Server) Listen(addr string) error {
 	return nil
 }
 
+// AddFilters adds one or more filter functions  to the server, allowing some messages to be ignored.
+func (server *Server) AddFilters(filters ...Filter) {
+	server.filters = append(server.filters, filters...)
+}
+
+// Start begins the async listen/accept loop for the server, creating a
+// a goroutine for each listener.
+func (server *Server) Start() error {
+
+	for _, listener := range server.listeners {
+		server.goAcceptConnection(listener)
+	}
+
+	return nil
+}
+
+// Stop closes the server cleanly.
+func (server *Server) Stop() {
+	close(server.done)
+
+	done := make(chan struct{})
+	go func() {
+		server.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(time.Second):
+		server.internalLogger.Error().Msg("Timed out waiting for connections to finish.")
+		return
+	}
+}
+
+// goAcceptConnection runs the connection loop for a single listener
 func (server *Server) goAcceptConnection(listener net.Listener) {
 	server.wg.Add(1)
 	go func(listener net.Listener) {
@@ -75,6 +113,8 @@ func (server *Server) goAcceptConnection(listener net.Listener) {
 	}(listener)
 }
 
+// readConnction reads a message on a connection and then writes it to the
+// main log (after filtering).
 func (server *Server) readConnection(connection net.Conn) {
 
 	defer connection.Close()
@@ -99,54 +139,24 @@ func (server *Server) readConnection(connection net.Conn) {
 
 func (server *Server) writeLog(remote string, buf bytes.Buffer) {
 
-	message := map[string]any{}
-
-	err := json.Unmarshal(buf.Bytes(), &message)
-	if err != nil {
-		server.internalLogger.Error().Err(err).Str("client", remote).Bytes("message", buf.Bytes()).Msg("Error unmarshalling log message")
-		return
-	} else {
-		for _, filter := range server.filters {
-			if !filter(server, message) {
-				server.internalLogger.Debug().Str("client", remote).Bytes("message", buf.Bytes()).Msg("Log message filtered out")
-				return
-			}
-		}
-		server.logger.Info().Str("client", remote).RawJSON("message", buf.Bytes()).Send()
-	}
-}
-
-func (server *Server) Stop() {
-	close(server.done)
-
-	done := make(chan struct{})
-	go func() {
-		server.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return
-	case <-time.After(time.Second):
-		server.internalLogger.Error().Msg("Timed out waiting for connections to finish.")
-		return
-	}
-}
-
-func (server *Server) Start() error {
-
+	// if we have no filters, don't bother to parse the input.
 	if len(server.filters) == 0 {
-		server.filters = append(server.filters, nilFilter)
+		server.logger.Info().Str("client", remote).RawJSON("message", buf.Bytes()).Send()
+	} else {
+		message := map[string]any{}
+		err := json.Unmarshal(buf.Bytes(), &message)
+		if err != nil {
+			server.internalLogger.Error().Err(err).Str("client", remote).Bytes("message", buf.Bytes()).Msg("Error unmarshalling log message")
+			return
+		} else {
+			for _, filter := range server.filters {
+				if !filter(server, message) {
+					server.internalLogger.Debug().Str("client", remote).Bytes("message", buf.Bytes()).Msg("Log message filtered out")
+					return
+				}
+			}
+			server.logger.Info().Str("client", remote).RawJSON("message", buf.Bytes()).Send()
+		}
 	}
 
-	for _, listener := range server.listeners {
-		server.goAcceptConnection(listener)
-	}
-
-	return nil
-}
-
-func nilFilter(server *Server, data map[string]interface{}) bool {
-	return true
 }

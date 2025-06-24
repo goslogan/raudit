@@ -15,15 +15,18 @@ import (
 	"github.com/spf13/pflag"
 )
 
-var port uint16
-var address string
+var listen []string
 var useSyslog bool
 var facility string
-var exclude bool
 var useSameLog bool
 var logFile string
 var appendLogs bool
 var useConsole bool
+var excludeStatus []uint
+var excludeInternalConn bool
+var excludeNewConn bool
+var excludeCloseConn bool
+var excludeAuth bool
 
 func main() {
 	var err error
@@ -41,16 +44,17 @@ func main() {
 		internalLogger.Fatal().Err(err).Msg("unable to initialise logger")
 	}
 
-	server, err := server.NewServer(internalLogger, logger)
-	if err != nil {
-		internalLogger.Fatal().Err(err).Msg("unable to build server")
-	}
-	err = server.Listen(fmt.Sprintf("%s:%d", address, port))
-	if err != nil {
-		internalLogger.Fatal().Uint16("port", port).Str("address", address).Err(err).Msg("unable to listen")
+	srv := server.NewServer(internalLogger, logger)
+	for _, l := range listen {
+		err = srv.Listen(l)
+		if err != nil {
+			internalLogger.Fatal().Str("listen", l).Err(err).Msg("unable to listen")
+		}
 	}
 
-	server.Start()
+	addFilters(srv, internalLogger)
+
+	srv.Start()
 
 	// Wait for a SIGINT or SIGTERM signal to gracefully shut down the server
 	sigChan := make(chan os.Signal, 1)
@@ -58,7 +62,7 @@ func main() {
 	<-sigChan
 
 	internalLogger.Info().Msg("Shutting down server...")
-	server.Stop()
+	srv.Stop()
 	internalLogger.Info().Msg("Server stopped.")
 
 }
@@ -121,14 +125,55 @@ func getSyslogFacility(facility string) (syslog.Priority, error) {
 	return syslog.LOG_LOCAL0, fmt.Errorf("invalid syslog facility: %s", facility)
 }
 
+// Add any required filters
+func addFilters(srv *server.Server, internalLogger zerolog.Logger) {
+
+	filters := []server.Filter{}
+
+	if excludeAuth {
+		filters = append(filters, server.ExcludeAuthConnection())
+	}
+
+	if excludeNewConn {
+		filters = append(filters, server.ExcludeNewConnection())
+	}
+
+	if excludeInternalConn {
+		filters = append(filters, server.ExcludeInternalConnection())
+	}
+
+	if excludeCloseConn {
+		filters = append(filters, server.ExcludeCloseConnection())
+	}
+
+	if len(excludeStatus) > 0 {
+		s := []server.AuthStatus{}
+
+		for _, n := range excludeStatus {
+			if n < uint(server.AUTH_STATUS_MIN) || n > uint(server.AUTH_STATUS_MAX) {
+				internalLogger.Fatal().Uint("status", n).Msg("invalid authentication status")
+			}
+			s = append(s, server.AuthStatus(n))
+		}
+
+		filters = append(filters, server.ExcludeAuthConnectionStatus(s...))
+	}
+
+	srv.AddFilters(filters...)
+
+}
+
 func init() {
-	pflag.Uint16VarP(&port, "port", "p", 29001, "port to listen on")
-	pflag.StringVarP(&address, "address", "a", "127.0.0.1", "address to listen on")
+	pflag.StringSliceVarP(&listen, "listen", "L", []string{"127.0.0.1:29001"}, "address:port (s) to listen on")
 	pflag.BoolVarP(&useSyslog, "syslog", "s", false, "send logs to syslog")
 	pflag.StringVarP(&facility, "facility", "F", "LOCAL0", "syslog facility to use")
-	pflag.BoolVarP(&exclude, "exclude-internal", "x", false, "exclude internal messages")
 	pflag.BoolVarP(&useSameLog, "same-log", "l", false, "use the same log for both internal and external messages")
 	pflag.StringVarP(&logFile, "logfile", "f", "", "log file to write to (default to stderr)")
 	pflag.BoolVarP(&appendLogs, "append", "A", false, "append to log file instead of overwriting")
 	pflag.BoolVarP(&useConsole, "console", "c", false, "use console output as well as defined logger ")
+	pflag.UintSliceVar(&excludeStatus, "exclude-auth-status", []uint{}, "exclude authentication status by code")
+	pflag.BoolVar(&excludeNewConn, "exclude-new-connection", false, "exclude new connections")
+	pflag.BoolVar(&excludeInternalConn, "exclude-internal-connection", false, "exclude internal connections")
+	pflag.BoolVar(&excludeCloseConn, "exclude-close-connection", false, "exclude closing connections")
+	pflag.BoolVar(&excludeAuth, "exclude-auth-connection", false, "exclude authentication connections")
 }
